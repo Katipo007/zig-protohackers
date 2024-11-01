@@ -1,0 +1,31 @@
+*.h text
+*.c text
+*.hpp text
+*.cpp text
+*.zig text
+*.txt text
+*.md text
+* text eol=lf
+*.png -text
+*.jpg -text
+*.gif -text
+*.mp4 -text
+*.pdb -text
+*.dll -text
+*.exe -text
+*.ttf -text
+*.bin -text
+*.gltf -text
+*.hdr -text
+*.wav -text
+*.mp3 -text
+*.hiplc -text
+*.blend -text
+*.flac -text
+*.lib -text
+*.o -text
+*.so -text
+*.a -text
+*.dds -text
+
+external/* linguist-vendored

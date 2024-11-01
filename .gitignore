@@ -1,0 +1,37 @@
+# Build directories and binary files
+.zig-cache/
+zig-cache/
+zig-out/
+backup/
+
+# User specific settings
+CMakeUserPresets.json
+
+# IDE files
+.vs/
+.idea/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.swp
+*~
+_ReSharper*
+*.log
+
+# OS Generated Files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.Trash-*
+$RECYCLE.BIN/
+.TemporaryItems
+ehthumbs.db
+Thumbs.db
+
+# 3rd Party Tool Files
+.obsidian/
+.trash

@@ -1,0 +1,156 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "${config:zig.path}",
+            "args": [
+                "build",
+                "install",
+                "-freference-trace"
+            ],
+            "icon": {
+                "id": "tools"
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$zig"
+            ],
+            "presentation": {
+                "clear": true
+            },
+        },
+        {
+            "label": "build x86_64-linux-gnu",
+            "type": "shell",
+            "command": "${config:zig.path}",
+            "args": [
+                "build",
+                "install",
+                "-Dtarget=x86_64-linux-gnu",
+                "-freference-trace"
+            ],
+            "icon": {
+                "id": "tools"
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$zig"
+            ],
+            "presentation": {
+                "clear": true
+            },
+        },
+        {
+            "label": "build x86_64-windows",
+            "type": "shell",
+            "command": "${config:zig.path}",
+            "args": [
+                "build",
+                "install",
+                "-Dtarget=x86_64-windows",
+                "-freference-trace"
+            ],
+            "icon": {
+                "id": "tools"
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$zig"
+            ],
+            "presentation": {
+                "clear": true
+            },
+        },
+        {
+            "label": "run tests",
+            "type": "shell",
+            "command": "${config:zig.path}",
+            "args": [
+                "build",
+                "run-tests",
+                "--summary",
+                "all",
+                "-freference-trace"
+            ],
+            "icon": {
+                "id": "beaker"
+            },
+            "group": "test",
+            "problemMatcher": [
+                "$zig"
+            ],
+            "presentation": {
+                "clear": true
+            },
+        },
+        {
+            "label": "build & test",
+            "icon": {
+                "id": "tools"
+            },
+            "dependsOn": [
+                "build", 
+                "run tests"
+            ],
+            "problemMatcher": [
+                "$zig"
+            ],
+            "dependsOrder": "sequence",
+        },
+        {
+            "label": "build all targets",
+            "icon": {
+                "id": "tools"
+            },
+            "dependsOn": [
+                "build x86_64-windows",
+                "build x86_64-linux-gnu",
+                "run tests"
+            ],
+            "problemMatcher": [
+                "$zig"
+            ],
+            "dependsOrder": "sequence",
+        },
+        {
+            "label": "build all targets & test",
+            "icon": {
+                "id": "tools"
+            },
+            "dependsOn": [
+                "build all targets",
+                "run tests"
+            ],
+            "problemMatcher": [
+                "$zig"
+            ],
+            "dependsOrder": "sequence",
+        },
+        {
+            "label": "format file",
+            "type": "shell",
+            "command": "${config:zig.path}",
+            "args": [
+                "fmt",
+                "${file}"
+            ],
+            "problemMatcher": [
+                "$zig"
+            ],
+        },
+        {
+            "label": "format all",
+            "type": "shell",
+            "command": "${config:zig.path}",
+            "args": [
+                "fmt",
+                "${workspaceFolder}${/}src"
+            ],
+            "problemMatcher": [
+                "$zig"
+            ],
+        },
+    ]
+}
