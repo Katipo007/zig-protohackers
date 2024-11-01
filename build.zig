@@ -59,5 +59,6 @@ pub fn build(b: *std.Build) !void {
         .tests_step = tests_step,
     };
 
+    _ = try add_problem_executable(b, &context, "problem-0", b.path("src/problem-0/main.zig"));
     _ = try add_problem_executable(b, &context, "problem-1", b.path("src/problem-1/main.zig"));
 }

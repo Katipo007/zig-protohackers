@@ -2,6 +2,26 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "problem-0",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/zig-out/bin/problem-0",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}/zig-out/bin",
+            "preLaunchTask": "build",
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "windows": {
+                "type": "cppvsdbg",
+                "console": "integratedTerminal",
+            },
+            "presentation": {
+                "clear": true
+            },
+        },
+        {
             "name": "problem-1",
             "type": "cppdbg",
             "request": "launch",
