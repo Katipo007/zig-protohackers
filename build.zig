@@ -49,6 +49,19 @@ pub fn build(b: *std.Build) !void {
     const check_step = b.step("check", "Check that the project compiles");
     const tests_step = b.step("run-tests", "Run tests");
 
+    // ------------ COMMON TESTS -------------
+
+    {
+        const test_common_exe = b.addTest(.{
+            .name = "common-tests",
+            .root_source_file = b.path("src/common/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const run_tests_common = b.addRunArtifact(test_common_exe);
+        tests_step.dependOn(&run_tests_common.step);
+    }
+
     // ------------- EXECUTABLES -------------
 
     const context = Context{
@@ -61,4 +74,5 @@ pub fn build(b: *std.Build) !void {
 
     _ = try add_problem_executable(b, &context, "problem-0", b.path("src/problem-0/main.zig"));
     _ = try add_problem_executable(b, &context, "problem-1", b.path("src/problem-1/main.zig"));
+    _ = try add_problem_executable(b, &context, "problem-2", b.path("src/problem-2/main.zig"));
 }

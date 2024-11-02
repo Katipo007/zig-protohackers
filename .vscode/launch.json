@@ -40,6 +40,26 @@
             "presentation": {
                 "clear": true
             },
+        },
+        {
+            "name": "problem-2",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}/zig-out/bin/problem-2",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceRoot}/zig-out/bin",
+            "preLaunchTask": "build",
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "windows": {
+                "type": "cppvsdbg",
+                "console": "integratedTerminal",
+            },
+            "presentation": {
+                "clear": true
+            },
         }
     ],
     "compounds": []
