@@ -58,8 +58,8 @@ jobs:
       - name: x86_64-linux -> x86_64-macos
         run: zig build install -Dtarget=x86_64-macos --summary all
 
-      - name: x86_64-linux -> aarch64-macos
-        run: zig build install -Dtarget=aarch64-macos --summary all
+      # - name: x86_64-linux -> aarch64-macos
+      #   run: zig build install -Dtarget=aarch64-macos --summary all
 
       - name: x86_64-linux -> x86_64-windows
         run: zig build install -Dtarget=x86_64-windows --summary all
