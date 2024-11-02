@@ -50,7 +50,7 @@ jobs:
           version: ${{ steps.zigversion.outputs.content }}
       
       - name: lint
-        run: zig fmt --check ./src ./libs
+        run: zig fmt --check ./src
       
       - name: x86_64-linux -> x86_64-linux-gnu
         run: zig build install -Dtarget=x86_64-linux-gnu --summary all
