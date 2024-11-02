@@ -9,4 +9,4 @@ Written in [Zig](https://ziglang.org/).
 
 ## Dependences
 
-- Zig (see @.zigversion@ file for the specific version)
+- Zig (see `.zigversion` file for the targeted version)
