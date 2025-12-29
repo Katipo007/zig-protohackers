@@ -1,8 +1,3 @@
-const std = @import("std");
-const common = @import("common");
-const settings = common.settings;
-const log = std.log.scoped(.@"problem-0");
-
 pub fn main() !void {
     defer log.info("Exit", .{});
     log.info("Start", .{});
@@ -12,67 +7,66 @@ pub fn main() !void {
         const result = gpa.deinit();
         std.debug.assert(result == .ok);
     }
-
     const allocator = gpa.allocator();
 
-    const host_address = try std.net.Address.parseIp(settings.default_address, settings.default_port);
-    var server = try host_address.listen(.{});
-    defer server.deinit();
+    var gpio = std.Io.Threaded.init(allocator);
+    defer gpio.deinit();
+    const io = gpio.io();
 
-    log.info("Server listening on '{}'", .{server.listen_address});
-
-    var thread_pool: std.Thread.Pool = undefined;
-    try thread_pool.init(.{
-        .allocator = allocator,
-        .n_jobs = settings.default_num_jobs,
+    const host_address = try std.Io.net.IpAddress.parse(config.listen_address, config.listen_port);
+    var server = try host_address.listen(io, .{
+        .mode = .stream,
+        .protocol = .tcp,
+        .reuse_address = true,
     });
-    defer thread_pool.deinit();
+    defer server.deinit(io);
 
-    const running = true;
+    log.info("Server listening on {f}", .{host_address});
+
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+
+    var context = Context{
+        .io = io,
+    };
+
+    const running: bool = true;
+    log.debug("Waiting for connection...", .{});
     while (running) {
-        log.debug("Waiting for connection...", .{});
-        if (server.accept()) |new_connection| {
-            errdefer new_connection.stream.close();
-            try thread_pool.spawn(handle_connection, .{new_connection});
-        } else |accept_error| {
-            switch (accept_error) {
-                else => |err| {
-                    log.err("Error accepting connection: {}", .{err});
-                },
-            }
-        }
+        const stream = try server.accept(io);
+        try group.concurrent(io, accept, .{ &context, stream });
     }
-
-    return;
 }
 
-fn handle_connection(connection: std.net.Server.Connection) void {
-    defer connection.stream.close();
-    defer log.info("Finished connection for '{}'", .{connection.address});
+const Context = struct {
+    io: std.Io,
+};
 
-    log.info("Accepted connection from '{}'", .{connection.address});
+fn accept(context: *Context, stream: std.Io.net.Stream) void {
+    const port = stream.socket.address.getPort();
+    log.debug("Connection accepted on port {d}", .{port});
+    defer log.info("Finished connection for port {d}", .{port});
+    errdefer |err| log.err("Encountered error while handling client on port {d}. Error = {s}", .{ port, @errorName(err) });
 
-    const max_message_size = 1024 * 4;
-    var read_buffer: [max_message_size]u8 = undefined;
+    const io = context.io;
+    defer stream.close(io);
 
+    var recv_buffer: [1024]u8 = undefined;
+    var send_buffer: [1024]u8 = undefined;
+    var conn_reader = stream.reader(io, &recv_buffer);
+    var conn_writer = stream.writer(io, &send_buffer);
+
+    var total_num_bytes: usize = 0;
     while (true) {
-        const num_bytes_read = connection.stream.readAll(read_buffer[0..]) catch |err| {
-            log.err("Failed to read message from '{}'. Error = {}", .{ connection.address, err });
-            return;
-        };
-
-        const message = read_buffer[0..num_bytes_read];
-        if (message.len == 0) {
-            break;
-        }
-
-        log.debug("Read message of '{}' bytes from '{}'", .{ message.len, connection.address });
-
-        connection.stream.writeAll(message) catch |err| {
-            log.err("Failed to write message back to '{}'. Error = {}", .{ connection.address, err });
-            return;
-        };
-
-        log.debug("Sent message back to '{}'", .{connection.address});
+        total_num_bytes += conn_reader.interface.streamRemaining(&conn_writer.interface) catch return;
+        conn_writer.interface.flush() catch return;
+        break;
     }
+
+    log.info("Relayed a total of {d} bytes back to the client on port {d}", .{ total_num_bytes, port });
 }
+
+const std = @import("std");
+const common = @import("common");
+const config = common.config;
+const log = std.log.scoped(.@"problem-0");

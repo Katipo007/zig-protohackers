@@ -7,6 +7,6 @@
 My solutions to the [Protohackers](https://protohackers.com/) problems.
 Written in [Zig](https://ziglang.org/).
 
-## Dependences
+## Dependencies
 
-- Zig (see `.zigversion` file for the targeted version)
+- [Zig](https://ziglang.org/) (see `.zigversion` file for the targeted version)

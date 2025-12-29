@@ -1,6 +1,8 @@
 .{
-    .name = "zig-protohackers",
+    .name = .zig_protohackers,
+    .fingerprint = 0xe1f9536f5b2d6490,
     .version = "0.1.0",
+    .minimum_zig_version = "0.16.0-dev.1657+985a3565c",
     .paths = .{
         "src",
         "build.zig",
