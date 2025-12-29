@@ -1,8 +1,3 @@
-const std = @import("std");
-const common = @import("common");
-const settings = common.settings;
-const log = std.log.scoped(.@"problem-1");
-
 pub fn main() !void {
     defer log.info("[Main] Exit", .{});
     log.info("[Main] Start", .{});
@@ -12,83 +7,90 @@ pub fn main() !void {
         const result = gpa.deinit();
         std.debug.assert(result == .ok);
     }
-
     const allocator = gpa.allocator();
 
-    const host_address = try std.net.Address.parseIp(settings.default_address, settings.default_port);
-    var server = try host_address.listen(.{});
-    defer server.deinit();
+    var gpio = std.Io.Threaded.init(allocator);
+    defer gpio.deinit();
+    const io = gpio.io();
 
-    log.info("[Main] Server listening on '{}'", .{server.listen_address});
-
-    var thread_pool: std.Thread.Pool = undefined;
-    try thread_pool.init(.{
-        .allocator = allocator,
-        .n_jobs = settings.default_num_jobs,
+    const host_address = try std.Io.net.IpAddress.parse(config.listen_address, config.listen_port);
+    var server = try host_address.listen(io, .{
+        .mode = .stream,
+        .protocol = .tcp,
+        .reuse_address = true,
     });
-    defer thread_pool.deinit();
+    defer server.deinit(io);
 
-    const running = true;
+    log.info("[Main] Server listening on '{f}'", .{host_address});
+
+    var group = std.Io.Group.init;
+    defer group.cancel(io);
+
+    var context = Context{
+        .io = io,
+    };
+
+    const running: bool = true;
+    log.debug("Waiting for connection...", .{});
     while (running) {
-        log.debug("[Main] Waiting for connection...", .{});
-        if (server.accept()) |new_connection| {
-            errdefer new_connection.stream.close();
-            try thread_pool.spawn(handle_connection, .{new_connection});
-        } else |accept_error| {
-            switch (accept_error) {
-                error.WouldBlock => {},
-                else => |err| {
-                    log.err("[Main] Error accepting connection: {}", .{err});
-                },
-            }
-        }
+        const stream = try server.accept(io);
+        try group.concurrent(io, accept, .{ &context, stream });
     }
 
     return;
 }
 
-fn handle_connection(connection: std.net.Server.Connection) void {
-    defer connection.stream.close();
-    defer log.debug("[{}] Connection closed", .{connection.address});
+const Context = struct {
+    io: std.Io,
+};
 
-    log.debug("[{}] Connection accepted", .{connection.address});
+fn accept(context: *Context, stream: std.Io.net.Stream) void {
+    const id = stream.socket.address;
 
-    var memory_buffer: [settings.default_memory_per_worker]u8 = undefined;
-    var buffered_allocator = std.heap.FixedBufferAllocator.init(memory_buffer[0..]);
+    log.debug("[{f}] Connection accepted", .{id});
+    defer log.debug("[{f}] Connection closed", .{id});
 
-    const max_message_size = 1024 * 40;
-    var read_buffer: [max_message_size]u8 = undefined;
+    const io = context.io;
+    defer stream.close(io);
 
-    var message_arena = std.heap.ArenaAllocator.init(buffered_allocator.allocator());
-    defer message_arena.deinit();
-    const message_allocator = message_arena.allocator();
+    var message_buffer: [1024 * 1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&message_buffer);
 
-    const reader = connection.stream.reader();
-    const writer = connection.stream.writer();
+    var recv_buffer: [1024 * 1024]u8 = undefined;
+    var send_buffer: [256]u8 = undefined;
+    var conn_reader = stream.reader(io, &recv_buffer);
+    var conn_writer = stream.writer(io, &send_buffer);
+
     while (true) {
-        defer _ = message_arena.reset(.retain_capacity);
+        defer fba.reset();
+        const request_allocator = fba.allocator();
 
-        const maybe_message = reader.readUntilDelimiterOrEof(read_buffer[0..], '\n') catch |err| {
-            log.err("[{}] Failed to read message. Error = {}", .{ connection.address, err });
-            return;
-        };
-        if (maybe_message == null) {
-            break;
-        }
+        const message = conn_reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+            error.ReadFailed => {
+                log.err("[{f}] Error receiving message: {s}", .{ id, @errorName(conn_reader.err.?) });
+                return;
+            },
+            error.StreamTooLong => {
+                log.err("[{f}] Error receiving message: OOM", .{id});
+                return;
+            },
+        } orelse break;
+        if (message.len == 0)
+            continue;
 
-        const message = maybe_message.?;
-        if (message.len == 0) {
-            break;
-        }
+        var request_timer = std.time.Timer.start() catch @panic("Failed to start timer");
+        defer log.debug("[{f}] request took {d}ms", .{ id, @divTrunc(request_timer.read(), std.time.ns_per_ms) });
 
-        //log.debug("Read message of '{}' bytes from '{}': {s}", .{ message.len, connection.address, message[0..@min(message.len, 60)] });
+        log.debug("[{f}] request = '{s}'", .{ id, message });
 
-        const request = std.json.parseFromSliceLeaky(Request, message_allocator, message, .{
+        const request = std.json.parseFromSliceLeaky(Request, request_allocator, message, .{
             .duplicate_field_behavior = .@"error",
             .ignore_unknown_fields = true,
             .max_value_len = 1000,
         }) catch |parse_error| {
-            log.debug("[{}] Malformed request. Error = {}", .{ connection.address, parse_error });
+            log.debug("[{f}] Malformed request. Error = {s}", .{ id, @errorName(parse_error) });
+            conn_writer.interface.writeAll("{\"error\":\"Malformed request.\"}\n") catch return;
+            conn_writer.interface.flush() catch return;
             return;
         };
 
@@ -98,40 +100,53 @@ fn handle_connection(connection: std.net.Server.Connection) void {
                 .prime = false,
             };
 
-            const start_time = std.time.nanoTimestamp();
-
             switch (request.number) {
                 .integer => |int| {
                     response.prime = is_prime(i64, int);
                 },
                 .float => {},
                 .number_string => {
-                    if (std.json.parseFromValueLeaky(i256, message_allocator, request.number, .{})) |big_int| {
+                    if (std.json.parseFromValueLeaky(i256, request_allocator, request.number, .{})) |big_int| {
                         response.prime = is_prime(i256, big_int);
                     } else |err| {
-                        log.err("[{}] number '{}' was a number string that we couldn't parse. Error = {}", .{ connection.address, request.number, err });
+                        log.debug("[{f}] number '{}' was a number string that we couldn't parse. Error = {s}", .{ id, request.number, @errorName(err) });
+                        conn_writer.interface.writeAll("{\"error\":\"'number' value was not a number.\"}\n") catch return;
+                        conn_writer.interface.flush() catch return;
                         return;
                     }
                 },
                 else => {
-                    log.err("[{}] number '{}' was not an accepted type", .{ connection.address, request.number });
+                    log.debug("[{f}] number '{}' was not an accepted type", .{ id, request.number });
+                    conn_writer.interface.writeAll("{\"error\":\"'number' value was not a number.\"}\n") catch return;
+                    conn_writer.interface.flush() catch return;
                     return;
                 },
             }
 
-            const end_time = std.time.nanoTimestamp();
+            var conn_json_writer: std.json.Stringify = .{
+                .writer = &conn_writer.interface,
+                .options = .{
+                    .whitespace = .minified,
+                },
+            };
+            conn_json_writer.write(response) catch |err| {
+                log.err("[{f}] Failed to write json response. Error = {}", .{ id, err });
+                return;
+            };
+            conn_writer.interface.writeByte('\n') catch |err| {
+                log.err("[{f}] Failed to write response terminator. Error = {}", .{ id, err });
+                return;
+            };
+            conn_writer.interface.flush() catch {
+                log.err("[{f}] Failed to flush response stream. Error = {?}", .{ id, conn_writer.err });
+                return;
+            };
 
-            log.debug("[{}] request = '{}', response = '{}' in {}ms", .{ connection.address, request.number, response.prime, @divTrunc(end_time - start_time, std.time.ns_per_ms) });
-            std.json.stringify(response, .{}, writer) catch |err| {
-                log.err("[{}] Failed to write json response. Error = {}", .{ connection.address, err });
-                return;
-            };
-            _ = writer.write("\n") catch |err| {
-                log.err("[{}] Failed to write response terminator. Error = {}", .{ connection.address, err });
-                return;
-            };
+            log.debug("[{f}] response = '{}'", .{ id, response.prime });
         } else {
-            log.debug("[{}] Invalid request method '{s}'", .{ connection.address, request.method });
+            log.debug("[{f}] Invalid request method '{s}'", .{ id, request.method });
+            conn_writer.interface.writeAll("{\"error\":\"Unrecognized method.\"}\n") catch return;
+            conn_writer.interface.flush() catch return;
             return;
         }
     }
@@ -146,22 +161,32 @@ const Response = struct {
     prime: bool,
 };
 
-fn is_prime(comptime T: type, value: T) bool {
-    if (value < 2) {
-        return false;
-    }
+fn is_prime(comptime RawT: type, raw_value: RawT) bool {
+    if (raw_value <= 1) return false;
+    const T = @Int(.unsigned, @typeInfo(RawT).int.bits);
+    const value = @as(T, @intCast(raw_value));
+    if (value == 2) return true;
+    if (value % 2 == 0) return false;
 
-    var i: T = 2;
-    while (i < value) {
-        if (@mod(value, i) == 0) {
+    const limit = std.math.sqrt(value);
+    var i: T = 3;
+    while (i < limit) {
+        defer i += 2;
+        if (value % i == 0) {
             return false;
         }
-
-        i += 1;
     }
-
     return true;
 }
+
+const std = @import("std");
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+};
+const common = @import("common");
+const config = common.config;
+const log = std.log.scoped(.@"problem-1");
+
 comptime {
     std.debug.assert(is_prime(i64, 2));
     std.debug.assert(!is_prime(i64, 4));
