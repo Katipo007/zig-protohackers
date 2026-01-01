@@ -1,8 +1,3 @@
-const std = @import("std");
-const common = @import("common");
-const settings = common.settings;
-const log = std.log.scoped(.@"problem-2");
-
 pub fn main() !void {
     defer log.info("[Main] Exit", .{});
     log.info("[Main] Start", .{});
@@ -12,121 +7,140 @@ pub fn main() !void {
         const result = gpa.deinit();
         std.debug.assert(result == .ok);
     }
-
     const allocator = gpa.allocator();
 
-    const host_address = try std.net.Address.parseIp(settings.default_address, settings.default_port);
-    var server = try host_address.listen(.{});
-    defer server.deinit();
+    var gpio = std.Io.Threaded.init(allocator);
+    defer gpio.deinit();
+    const io = gpio.io();
 
-    log.info("[Main] Server listening on '{}'", .{server.listen_address});
-
-    var thread_pool: std.Thread.Pool = undefined;
-    try thread_pool.init(.{
-        .allocator = allocator,
-        .n_jobs = settings.default_num_jobs,
+    const host_address = try std.Io.net.IpAddress.parse(config.listen_address, config.listen_port);
+    var server = try host_address.listen(io, .{
+        .mode = .stream,
+        .protocol = .tcp,
+        .reuse_address = true,
     });
-    defer thread_pool.deinit();
+    defer server.deinit(io);
 
-    const running = true;
+    log.info("[Main] Server listening on '{f}'", .{host_address});
+
+    var group = std.Io.Group.init;
+    defer group.cancel(io);
+
+    var context = Context{
+        .gpa = allocator,
+        .io = io,
+    };
+
+    const running: bool = true;
+    log.debug("Waiting for connection...", .{});
     while (running) {
-        log.debug("[Main] Waiting for connection...", .{});
-        if (server.accept()) |new_connection| {
-            errdefer new_connection.stream.close();
-            try thread_pool.spawn(handle_connection, .{new_connection});
-        } else |accept_error| {
-            switch (accept_error) {
-                error.WouldBlock => {},
-                else => |err| {
-                    log.err("[Main] Error accepting connection: {}", .{err});
-                },
-            }
-        }
+        const stream = try server.accept(io);
+        try group.concurrent(io, handle_connection, .{ &context, stream });
     }
 
     return;
 }
 
-fn handle_connection(connection: std.net.Server.Connection) void {
-    defer connection.stream.close();
-    defer log.debug("[{}] Connection closed", .{connection.address});
+const Context = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+};
 
-    log.debug("[{}] Connection accepted", .{connection.address});
+const Record = struct {
+    timestamp: i32,
+    price: i32,
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    fn compare_timestamp(_: void, lhs: i32, rhs: @This()) std.math.Order {
+        return std.math.order(lhs, rhs.timestamp);
+    }
+};
+
+const Command = enum(u8) {
+    insert = 'I',
+    query = 'Q',
+};
+
+fn handle_connection(context: *Context, stream: std.Io.net.Stream) void {
+    const id = stream.socket.address;
+
+    log.debug("[{f}] Connection accepted", .{id});
+    defer log.debug("[{f}] Connection closed", .{id});
+
+    const io = context.io;
+    defer stream.close(io);
+
+    var gpa = std.heap.stackFallback(4068, context.gpa);
+    const allocator = gpa.get();
+
+    var stats: struct {
+        num_insert_commands: usize = 0,
+        num_query_commands: usize = 0,
+    } = .{};
+    defer log.debug("[{f}] Stats = {}", .{ id, stats });
+
+    var records: std.ArrayList(Record) = .{};
     defer {
-        const result = gpa.deinit();
-        std.debug.assert(result == .ok);
+        log.debug("[{f}] Total num records = {d}", .{ id, records.items.len });
+        records.deinit(allocator);
     }
 
-    const Record = struct {
-        timestamp: i32,
-        price: i32,
-
-        fn compare_timestamp(_: void, lhs: i32, rhs: @This()) std.math.Order {
-            return std.math.order(lhs, rhs.timestamp);
-        }
-    };
-    var records = std.ArrayList(Record).init(gpa.allocator());
-    defer records.deinit();
-
-    const reader = connection.stream.reader();
-    const writer = connection.stream.writer();
+    var recv_buffer: [1024 * 1024]u8 = undefined;
+    var send_buffer: [128]u8 = undefined;
+    var conn_reader = stream.reader(io, &recv_buffer);
+    var conn_writer = stream.writer(io, &send_buffer);
     while (true) {
-        var message_buffer: [9]u8 = undefined;
-
-        const num_bytes_read = reader.readAll(message_buffer[0..]) catch |err| {
-            log.err("[{}] Failed to read message. Error = {}", .{ connection.address, err });
+        const command_id = conn_reader.interface.takeEnum(Command, .big) catch |read_err| {
+            if (read_err != error.EndOfStream) {
+                log.err("[{f}] Failed to read message. Error = {?}", .{ id, conn_reader.err });
+            }
             return;
         };
 
-        const message = message_buffer[0..num_bytes_read];
-        const expected_message_length = 9;
-        if (message.len != expected_message_length) {
-            log.err("[{}] Invalid message length. Expected = {}, Actual = {}", .{ connection.address, expected_message_length, num_bytes_read });
-            return;
-        }
+        var request_timer = std.time.Timer.start() catch @panic("Failed to start timer");
+        defer log.debug("[{f}] request took {d}ms", .{ id, @divTrunc(request_timer.read(), std.time.ns_per_ms) });
 
-        const message_type: u8 = message_buffer[0];
-        switch (message_type) {
-            'I' => {
-                const InsertMessage = packed struct {
-                    message_type: u8,
-                    timestamp: i32,
-                    price: i32,
+        log.debug("[{f}] Received command: {}", .{ id, command_id });
+
+        switch (command_id) {
+            .insert => {
+                stats.num_insert_commands += 1;
+                const command = conn_reader.interface.takeStruct(extern struct { timestamp: i32, price: i32 }, .big) catch |read_err| {
+                    if (read_err != error.EndOfStream) {
+                        log.err("[{f}] Failed to read insert command. Error = {?}", .{ id, conn_reader.err });
+                    }
+                    return;
                 };
-                const instruction = bytes_to_value(InsertMessage, message[0..9], .big);
 
-                const target_index = common.utility.lower_bound(Record, instruction.timestamp, records.items, {}, Record.compare_timestamp);
-                if (target_index < records.items.len and records.items[target_index].timestamp == instruction.timestamp) {
+                const target_index = common.utility.lower_bound(Record, command.timestamp, records.items, {}, Record.compare_timestamp);
+                if (target_index < records.items.len and records.items[target_index].timestamp == command.timestamp) {
                     // Value already exists, by protocol definition this is undefined behavior.
                     // We choose to overwrite the value
-                    var record = records.items[target_index];
-                    record.price = instruction.price;
-                    records.items[target_index] = record;
+                    var record = &records.items[target_index];
+                    record.price = command.price;
                 } else {
-                    records.insert(target_index, Record{ .timestamp = instruction.timestamp, .price = instruction.price }) catch |err| {
-                        log.err("[{}] Error recording price. Error = {}", .{ connection.address, err });
+                    records.insert(allocator, target_index, Record{ .timestamp = command.timestamp, .price = command.price }) catch |err| {
+                        log.err("[{f}] Error recording price. Error = {}", .{ id, err });
                         return;
                     };
                 }
 
-                log.debug("[{}] Inserted record. Timestamp = {}, Price = {}", .{ connection.address, instruction.timestamp, instruction.price });
+                log.debug("[{f}] Inserted record. Timestamp = {}, Price = {}", .{ id, command.timestamp, command.price });
             },
-            'Q' => {
-                const QueryMessage = packed struct {
-                    message_type: u8,
-                    min_timestamp: i32,
-                    max_timestamp: i32,
+            .query => {
+                stats.num_query_commands += 1;
+                const command = conn_reader.interface.takeStruct(extern struct { min_timestamp: i32, max_timestamp: i32 }, .big) catch |read_err| {
+                    if (read_err != error.EndOfStream) {
+                        log.err("[{f}] Failed to read query command. Error = {?}", .{ id, conn_reader.err });
+                    }
+                    return;
                 };
-                const instruction = bytes_to_value(QueryMessage, message[0..9], .big);
 
                 var sum: i128 = 0;
                 var num_entries: usize = 0;
 
-                if (instruction.min_timestamp <= instruction.max_timestamp) {
-                    const lower_bound_index = common.utility.lower_bound(Record, instruction.min_timestamp, records.items, {}, Record.compare_timestamp);
-                    const upper_bound_index = common.utility.upper_bound(Record, instruction.max_timestamp, records.items, {}, Record.compare_timestamp);
+                if (command.min_timestamp <= command.max_timestamp) {
+                    const lower_bound_index = common.utility.lower_bound(Record, command.min_timestamp, records.items, {}, Record.compare_timestamp);
+                    const upper_bound_index = common.utility.upper_bound(Record, command.max_timestamp, records.items, {}, Record.compare_timestamp);
                     if (lower_bound_index < records.items.len and upper_bound_index <= records.items.len) {
                         for (lower_bound_index..upper_bound_index) |idx| {
                             sum += records.items[idx].price;
@@ -143,26 +157,19 @@ fn handle_connection(connection: std.net.Server.Connection) void {
                     break :bk 0;
                 };
 
-                log.debug("[{}] Price query. MinTimestamp = {}, MaxTimestamp = {}, Mean = {}", .{ connection.address, instruction.min_timestamp, instruction.max_timestamp, mean_price });
-                writer.writeInt(i32, @intCast(mean_price), .big) catch |err| {
-                    log.err("[{}] Failed to write query response. Error = {}", .{ connection.address, err });
+                log.debug("[{f}] Price query. MinTimestamp = {}, MaxTimestamp = {}, Mean = {}", .{ id, command.min_timestamp, command.max_timestamp, mean_price });
+                conn_writer.interface.writeInt(i32, @intCast(mean_price), .big) catch {
+                    log.err("[{f}] Failed to write query response. Error = {?}", .{ id, conn_writer.err });
                 };
-            },
-            else => {
-                log.err("[{}] Invalid message type. Type = {}", .{ connection.address, message_type });
-                return;
+                conn_writer.interface.flush() catch {
+                    log.err("[{f}] Failed to flush query response. Error = {?}", .{ id, conn_writer.err });
+                };
             },
         }
     }
 }
 
-fn bytes_to_value(comptime T: type, bytes: []const u8, endian: std.builtin.Endian) T {
-    var result = std.mem.bytesToValue(T, bytes);
-
-    const native_endian = @import("builtin").target.cpu.arch.endian();
-    if (native_endian != endian) {
-        std.mem.byteSwapAllFields(T, &result);
-    }
-
-    return result;
-}
+const std = @import("std");
+const common = @import("common");
+const config = common.config;
+const log = std.log.scoped(.@"problem-2");
