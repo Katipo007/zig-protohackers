@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) !void {
     _ = try add_problem_executable(b, &context, "problem-0", b.path("src/problem-0/main.zig"));
     _ = try add_problem_executable(b, &context, "problem-1", b.path("src/problem-1/main.zig"));
     _ = try add_problem_executable(b, &context, "problem-2", b.path("src/problem-2/main.zig"));
+    _ = try add_problem_executable(b, &context, "problem-3", b.path("src/problem-3/main.zig"));
 }
 
 const std = @import("std");
